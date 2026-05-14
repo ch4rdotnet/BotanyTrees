@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Derive version and BUILD_NUMBER from tag
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          base_version="$(grep -E '^version=' gradle.properties | cut -d= -f2 | tr -d '[:space:]')"
+          if [[ "$version" != "$base_version" && "$version" != "$base_version".* ]]; then
+            echo "::error::Tag '$tag' does not match gradle.properties version '$base_version' (expected v$base_version or v$base_version.<n>)"
+            exit 1
+          fi
+          if [[ "$version" == "$base_version" ]]; then
+            build_number=0
+          else
+            build_number="${version#$base_version.}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "build_number=$build_number" >> "$GITHUB_OUTPUT"
+          echo "Tag: $tag -> version=$version BUILD_NUMBER=$build_number"
+
+      - name: Build NeoForge and Fabric
+        env:
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :neoforge:build :fabric:build --stacktrace
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            neoforge/build/libs/botanytrees-neoforge-*-${{ steps.version.outputs.version }}.jar
+            fabric/build/libs/botanytrees-fabric-*-${{ steps.version.outputs.version }}.jar
